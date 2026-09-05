@@ -1,6 +1,7 @@
 // Sends approved messages for a plan through the operator's configured provider.
-// Providers: twilio (WhatsApp + SMS), resend (email), manual (marks sent, operator copies text). Never sends drafts or held messages.
+// Providers: twilio (WhatsApp + SMS), gmail then resend (email), manual (marks sent, operator copies text). Never sends drafts or held messages.
 import { admin, audit, cors, json, requireMember } from "../_shared/auth.ts";
+import { sendOperatorEmail } from "../_shared/gmail.ts";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
@@ -11,6 +12,8 @@ Deno.serve(async (req) => {
     const db = admin();
     const { data: op } = await db.from("operators").select("name, settings").eq("id", operator_id).single();
     const provider = op?.settings?.messaging ?? {};
+    const { data: gmailConn } = await db.from("connectors").select("id").eq("operator_id", operator_id).eq("kind", "gmail").not("secret", "is", null).maybeSingle();
+    const canEmail = !!gmailConn || !!(provider.resend_key && provider.email_from);
     let q = db.from("messages").select("*").eq("plan_id", plan_id).eq("status", "approved");
     if (message_ids?.length) q = q.in("id", message_ids);
     const { data: msgs } = await q;
@@ -25,9 +28,9 @@ Deno.serve(async (req) => {
           const to = isWa ? `whatsapp:${m.recipient}` : m.recipient;
           const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${provider.twilio_sid}/Messages.json`, { method: "POST", headers: { Authorization: "Basic " + btoa(`${provider.twilio_sid}:${provider.twilio_token}`), "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ From: from, To: to, Body: m.body }) });
           const j = await r.json(); if (!r.ok) throw new Error(j.message ?? `Twilio ${r.status}`); ref = j.sid;
-        } else if (m.channel === "email" && provider.resend_key && provider.email_from) {
-          const r = await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${provider.resend_key}`, "Content-Type": "application/json" }, body: JSON.stringify({ from: provider.email_from, to: [m.recipient], subject: `${op?.name}: your pickup tomorrow`, text: m.body }) });
-          const j = await r.json(); if (!r.ok) throw new Error(j.message ?? `Resend ${r.status}`); ref = j.id;
+        } else if (m.channel === "email" && canEmail) {
+          const out = await sendOperatorEmail(db, operator_id, op?.settings, { to: m.recipient, subject: `${op?.name}: your pickup tomorrow`, text: m.body });
+          if (!out) throw new Error("no email route available"); ref = `${out.via}:${out.id ?? ""}`;
         } else { status = "sent"; ref = "manual"; error = "No provider configured for this channel; marked sent manually."; }
       } catch (e) { status = "failed"; error = String(e?.message ?? e); }
       await db.from("messages").update({ status, sent_at: status === "sent" ? new Date().toISOString() : null, provider_ref: ref, error }).eq("id", m.id);

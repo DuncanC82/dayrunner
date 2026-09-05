@@ -12,9 +12,28 @@ export default function Connectors() {
   const { operator } = useAuth();
   const [conns, setConns] = useState<any[]>([]); const [msg, setMsg] = useState<string | null>(null); const [err, setErr] = useState<string | null>(null); const [busy, setBusy] = useState(false);
   const [form, setForm] = useState<Record<string, any>>({}); const [messaging, setMessaging] = useState<any>({});
+  const [inbound, setInbound] = useState<any[]>([]);
   const oid = operator?.id;
-  async function load() { if (!oid) return; const { data } = await supabase.from("connectors_public").select("*").eq("operator_id", oid); setConns(data ?? []); const { data: op } = await supabase.from("operators").select("settings").eq("id", oid).single(); setMessaging(op?.settings?.messaging ?? {}); }
+  async function load() {
+    if (!oid) return;
+    const { data } = await supabase.from("connectors_public").select("*").eq("operator_id", oid); setConns(data ?? []);
+    const { data: op } = await supabase.from("operators").select("settings").eq("id", oid).single(); setMessaging(op?.settings?.messaging ?? {});
+    const { data: ib } = await supabase.from("inbound_emails").select("id, from_email, subject, received_at, matched_to, matched_id").eq("operator_id", oid).order("received_at", { ascending: false }).limit(10); setInbound(ib ?? []);
+  }
   useEffect(() => { load(); }, [oid]);
+  useEffect(() => {
+    const u = new URL(window.location.href); const g = u.searchParams.get("gmail"); const ge = u.searchParams.get("gmail_error");
+    if (g === "connected") setMsg(`Gmail connected as ${u.searchParams.get("gmail_email") ?? "your Google account"}.`);
+    if (ge) setErr(`Google connection failed: ${ge}`);
+    if (g || ge) { for (const k of ["gmail", "gmail_error", "gmail_email"]) u.searchParams.delete(k); window.history.replaceState({}, "", u.toString()); }
+  }, []);
+  async function connectGmail() {
+    setBusy(true); setErr(null);
+    try { const u = new URL(window.location.href); u.hash = ""; const r = await callFn("gmail-auth", { operator_id: oid, return_to: u.toString() }); window.location.href = r.url; }
+    catch (e: any) { setErr(e.message); setBusy(false); }
+  }
+  async function pollGmail() { setBusy(true); setErr(null); try { const r = await callFn("gmail-poll", { operator_id: oid }); setMsg(`Inbox checked: ${r.fetched} recent, ${r.new} new, ${r.matched} matched, ${r.none} unmatched${r.errors?.length ? `; errors: ${r.errors.join("; ")}` : ""}.`); await load(); } catch (e: any) { setErr(e.message); } finally { setBusy(false); } }
+  async function disconnectGmail() { const c = conns.find((x) => x.kind === "gmail"); if (!c || !confirm("Disconnect Gmail? DayRunner will fall back to Resend or manual sending.")) return; await supabase.from("connectors").delete().eq("id", c.id); setMsg("Gmail disconnected."); await load(); }
 
   async function save(kind: string) {
     setErr(null); const f = form[kind] ?? {}; const existing = conns.find((c) => c.kind === kind);
@@ -44,9 +63,28 @@ export default function Connectors() {
           <div className="bar"><button onClick={() => save(k.kind)}>Save</button>{c && <button className="ghost" disabled={busy} onClick={() => sync(k.kind, k.fn)}>Pull tomorrow's bookings now</button>}</div>
         </section>); })}
 
+      {(() => { const g = conns.find((x) => x.kind === "gmail"); const MATCH: Record<string, string> = { supplier_confirmation: "supplier confirmation", transport_request: "transport request", booking: "booking", none: "no match" }; return (
+      <section className="panel" style={{ marginTop: 16 }}>
+        <div className="bar"><h2>Gmail</h2>{g ? <span className={`tag ${g.status === "error" ? "t-bad" : "t-ok"}`}>{g.config?.email ?? "connected"}{g.last_sync_at ? ` · inbox checked ${new Date(g.last_sync_at).toLocaleString()}` : " · not polled yet"}</span> : <span className="tag t-warn">not connected</span>}</div>
+        <p className="muted small">Send supplier reconfirmations, coach requests and guest emails from your own Google Workspace address, and let DayRunner read the replies straight out of your inbox. Replies are matched to what we sent by thread, then by the supplier's email. DayRunner only reads and sends; it never deletes or moves mail.</p>
+        <p className="muted small">Until Google has verified the DayRunner app, only Google accounts added as test users in Google Cloud can connect (limit 100). You will see an "unverified app" warning during consent; choose Continue.</p>
+        {g?.last_error && <div className="notice err">{g.last_error}</div>}
+        <div className="bar">
+          <button disabled={busy || !oid} onClick={connectGmail}>{g ? "Reconnect Google" : "Connect Google"}</button>
+          {g && <button className="ghost" disabled={busy} onClick={pollGmail}>Check inbox now</button>}
+          {g && <button className="ghost" disabled={busy} onClick={disconnectGmail}>Disconnect</button>}
+        </div>
+        {g && inbound.length > 0 && (
+          <table className="small" style={{ marginTop: 12, width: "100%" }}>
+            <thead><tr><th>Received</th><th>From</th><th>Subject</th><th>Matched</th></tr></thead>
+            <tbody>{inbound.map((m) => <tr key={m.id}><td>{m.received_at ? new Date(m.received_at).toLocaleString() : ""}</td><td>{m.from_email}</td><td>{m.subject}</td><td><span className={`tag ${m.matched_to === "none" ? "t-warn" : "t-ok"}`}>{MATCH[m.matched_to] ?? m.matched_to}</span></td></tr>)}</tbody>
+          </table>)}
+        {g && inbound.length === 0 && <p className="muted small">No inbound emails pulled yet. Click "Check inbox now" after a supplier replies.</p>}
+      </section>); })()}
+
       <section className="panel" style={{ marginTop: 16 }}>
         <h2>Messaging provider</h2>
-        <p className="muted small">Leave blank to run in manual mode: DayRunner drafts, you copy and send. Twilio covers WhatsApp and SMS. Resend covers email. Keys are stored against your operator record.</p>
+        <p className="muted small">Leave blank to run in manual mode: DayRunner drafts, you copy and send. Twilio covers WhatsApp and SMS. Resend covers email when Gmail is not connected (Gmail wins if both are set). Keys are stored against your operator record.</p>
         <div className="grid3">
           <div><label>Twilio Account SID</label><input value={messaging.twilio_sid ?? ""} onChange={(e) => setMessaging({ ...messaging, twilio_sid: e.target.value })} /><label>Twilio Auth Token</label><input type="password" value={messaging.twilio_token ?? ""} onChange={(e) => setMessaging({ ...messaging, twilio_token: e.target.value })} /></div>
           <div><label>SMS from number</label><input value={messaging.twilio_from ?? ""} onChange={(e) => setMessaging({ ...messaging, twilio_from: e.target.value })} placeholder="+64..." /><label>WhatsApp from number</label><input value={messaging.whatsapp_from ?? ""} onChange={(e) => setMessaging({ ...messaging, whatsapp_from: e.target.value })} placeholder="+64..." /></div>

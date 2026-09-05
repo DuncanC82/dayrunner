@@ -1,7 +1,10 @@
 // DayRunner supplier reconfirmation.
 //  POST {operator_id, plan_id, confirmation_ids?}  (member JWT) -> compose + send/mark each supplier confirmation.
 //  POST ?token=<connectors.webhook_token, kind 'email'> {from, subject, text} -> inbound reply, matched to latest confirmation for that supplier.
+//  Sending prefers the operator's Gmail connector, then Resend, then manual (copy + mark sent). Gmail thread id stored for reply matching.
 import { admin, audit, cors, json, requireMember } from "../_shared/auth.ts";
+import { sendOperatorEmail } from "../_shared/gmail.ts";
+import { bareEmail, matchSupplierReply } from "../_shared/inbound.ts";
 
 const CATEGORY_LABEL: Record<string, string> = {
   activity: "activity booking", meal_breakfast: "breakfast", meal_lunch: "lunch", meal_dinner: "dinner",
@@ -16,7 +19,6 @@ const CATEGORY_LINE: Record<string, string> = {
   accommodation: "Please confirm the rooms are held and let us know the check-in arrangements for the group.",
   other: "Please let us know if anything about this booking has changed.",
 };
-const YES = /\b(confirm(ed|ing)?|yes|yep|all good|sweet as|no problem|no worries|booked|sorted)\b/i;
 
 function niceDate(iso: string) {
   const d = new Date(iso + "T00:00:00");
@@ -48,7 +50,6 @@ async function polish(key: string, voice: string | null, opName: string, bodies:
     return res;
   } catch { return bodies; }
 }
-const bareEmail = (s: string) => (String(s ?? "").match(/[\w.+-]+@[\w-]+\.[\w.-]+/)?.[0] ?? "").toLowerCase();
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
@@ -61,26 +62,10 @@ Deno.serve(async (req) => {
       const { data: conn } = await db.from("connectors").select("operator_id").eq("kind", "email").eq("webhook_token", token).maybeSingle();
       if (!conn) return json({ error: "unknown token" }, 404);
       const body = await req.json().catch(() => ({}));
-      const from = bareEmail(body.from ?? body.sender ?? ""); const text = String(body.text ?? body.body ?? body.html ?? "").trim();
-      if (!from) return json({ matched: false, reason: "no sender" });
-      const { data: sups } = await db.from("suppliers").select("id, name, email, contact").eq("operator_id", conn.operator_id);
-      const sup = (sups ?? []).find((s) => bareEmail(s.email ?? "") === from) ?? (sups ?? []).find((s) => bareEmail(s.contact ?? "") === from);
-      if (!sup) return json({ matched: false, reason: "unknown sender" });
-      // Prefer the most recently *sent* confirmation for this supplier; fall back to the soonest pending one.
-      let { data: c } = await db.from("supplier_confirmations").select("id, status, sent_at").eq("operator_id", conn.operator_id).eq("supplier_id", sup.id)
-        .in("status", ["sent", "sent_manual", "replied"]).not("sent_at", "is", null).order("sent_at", { ascending: false }).limit(1).maybeSingle();
-      if (!c) {
-        const { data: pend } = await db.from("supplier_confirmations").select("id, status, sent_at, plans!inner(date)").eq("operator_id", conn.operator_id).eq("supplier_id", sup.id)
-          .in("status", ["pending", "hold"]).order("date", { referencedTable: "plans", ascending: true }).limit(1).maybeSingle();
-        c = pend as any;
-      }
-      if (!c) return json({ matched: false, reason: "no open confirmation" });
-      const confirmed = YES.test(text);
-      const status = confirmed ? "confirmed" : "replied";
-      const { error: re } = await db.from("supplier_confirmations").update({ reply_text: text.slice(0, 4000), replied_at: new Date().toISOString(), status }).eq("id", c.id);
-      if (re) return json({ matched: true, confirmation_id: c.id, error: re.message }, 500);
-      await audit(conn.operator_id, "inbound-email", "supplier.reply.received", "supplier_confirmation", c.id, { from, subject: body.subject ?? null, status });
-      return json({ matched: true, confirmation_id: c.id, status });
+      const text = String(body.text ?? body.body ?? body.html ?? "").trim();
+      const res = await matchSupplierReply(db, conn.operator_id, { from: body.from ?? body.sender ?? "", subject: body.subject ?? null, text });
+      if (res.matched_to === "none") return json({ matched: false, reason: res.reason });
+      return json({ matched: true, confirmation_id: res.matched_id, status: res.status });
     }
 
     // ---------- compose + send ----------
@@ -92,8 +77,9 @@ Deno.serve(async (req) => {
       db.from("plans").select("id, date").eq("id", plan_id).eq("operator_id", operator_id).single(),
     ]);
     if (!op || !plan) return json({ error: "plan not found" }, 404);
+    const { data: gmailConn } = await db.from("connectors").select("id").eq("operator_id", operator_id).eq("kind", "gmail").not("secret", "is", null).maybeSingle();
     const provider = op.settings?.messaging ?? {};
-    const canEmail = !!(provider.resend_key && provider.email_from);
+    const canEmail = !!gmailConn || !!(provider.resend_key && provider.email_from);
     let q = db.from("supplier_confirmations").select("*").eq("plan_id", plan_id).neq("status", "confirmed");
     if (confirmation_ids?.length) q = q.in("id", confirmation_ids);
     const { data: rows } = await q;
@@ -109,21 +95,21 @@ Deno.serve(async (req) => {
     for (let i = 0; i < rows.length; i++) {
       const c = rows[i]; const sup = supOf(c.supplier_id); const body = bodies[i];
       const to = bareEmail(sup.email ?? "") || bareEmail(sup.contact ?? "");
-      let status = "sent_manual"; let note: string | null = null;
+      let status = "sent_manual"; let note: string | null = null; let via: string | null = null; let threadId: string | null = c.gmail_thread_id ?? null;
       try {
         if (canEmail && to) {
           const subject = `${op.name}: reconfirming ${CATEGORY_LABEL[sup.category] ?? "booking"} for ${niceDate(plan.date)}`;
-          const r = await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${provider.resend_key}`, "Content-Type": "application/json" }, body: JSON.stringify({ from: provider.email_from, to: [to], reply_to: provider.email_from, subject, text: body }) });
-          const j = await r.json(); if (!r.ok) throw new Error(j.message ?? `Resend ${r.status}`);
-          status = "sent"; note = j.id ?? null;
+          const sent = await sendOperatorEmail(db, operator_id, op.settings, { to, subject, text: body, threadId: threadId ?? undefined });
+          if (sent) { status = "sent"; via = sent.via; note = sent.id ?? null; if (sent.thread_id) threadId = sent.thread_id; }
+          else note = "No email provider configured; copy the draft and send it by hand.";
         } else if (canEmail && !to) note = "No email on file for this supplier; marked as sent by hand.";
         else note = "No email provider configured; copy the draft and send it by hand.";
       } catch (e) { status = "failed"; note = String(e?.message ?? e); }
-      const { error: ue } = await db.from("supplier_confirmations").update({ message_body: body, status, sent_at: status === "failed" ? null : new Date().toISOString() }).eq("id", c.id);
+      const { error: ue } = await db.from("supplier_confirmations").update({ message_body: body, status, sent_at: status === "failed" ? null : new Date().toISOString(), gmail_thread_id: threadId }).eq("id", c.id);
       if (ue) { status = "failed"; note = `db: ${ue.message}`; }
-      results.push({ id: c.id, supplier: sup.name, to: to || null, status, note });
+      results.push({ id: c.id, supplier: sup.name, to: to || null, status, via, note });
     }
-    await audit(operator_id, userId, "supplier.confirmations.sent", "plan", plan_id, { count: results.length, sent: results.filter((r) => r.status === "sent").length, manual: results.filter((r) => r.status === "sent_manual").length, failed: results.filter((r) => r.status === "failed").length, polished: !!key });
+    await audit(operator_id, userId, "supplier.confirmations.sent", "plan", plan_id, { count: results.length, sent: results.filter((r) => r.status === "sent").length, manual: results.filter((r) => r.status === "sent_manual").length, failed: results.filter((r) => r.status === "failed").length, polished: !!key, gmail: !!gmailConn });
     return json({ results });
   } catch (e) { if (e instanceof Response) return e; return json({ error: String(e?.message ?? e) }, 500); }
 });
