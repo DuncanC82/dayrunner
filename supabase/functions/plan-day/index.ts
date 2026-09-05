@@ -241,7 +241,7 @@ Deno.serve(async (req) => {
         if (!s.product_names.map(norm).some((n) => norm(d.product_name).includes(n) || n.includes(norm(d.product_name)))) continue;
         const dietary = bk.filter((b) => /vegetarian|vegan|gluten|dairy|allerg/i.test(b.notes ?? "")).length;
         const detail = s.detail_template.replace("{date}", date).replace("{pax}", String(pax)).replace("{product}", d.product_name).replace("{time}", d.time.slice(0, 5)) + (dietary ? ` (${dietary} dietary)` : "");
-        confirmations.push({ supplier_id: s.id, supplier_name: s.name, detail, due_label: s.confirm_by, status: held ? "hold" : "pending" });
+        confirmations.push({ supplier_id: s.id, supplier_name: s.name, detail, due_label: s.confirm_by, status: held ? "hold" : "pending", category: (s as any).category ?? null });
       }
       // Tour days: every stop with a supplier is a confirmation, with the stop's time, name and reference.
       if ((d as any).tour_day_id) {
@@ -250,7 +250,7 @@ Deno.serve(async (req) => {
         for (const st of (dayStops ?? []) as any[]) {
           const sup = SUP.find((x) => x.id === st.supplier_id); if (!sup) continue;
           const detail = `${st.time ? String(st.time).slice(0, 5) + " " : ""}${st.name}${st.reference ? ` (ref ${st.reference})` : ""}: ${pax} pax on ${date}${dietary && /meal|accommodation/.test(st.category) ? ` (${dietary} dietary)` : ""}`;
-          if (!confirmations.some((c) => c.supplier_id === sup.id && c.detail === detail)) confirmations.push({ supplier_id: sup.id, supplier_name: sup.name, detail, due_label: sup.confirm_by, status: held ? "hold" : "pending" });
+          if (!confirmations.some((c) => c.supplier_id === sup.id && c.detail === detail)) confirmations.push({ supplier_id: sup.id, supplier_name: sup.name, detail, due_label: sup.confirm_by, status: held ? "hold" : "pending", category: st.category ?? (sup as any).category ?? null });
         }
       }
     }

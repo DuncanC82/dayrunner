@@ -59,5 +59,26 @@ export async function loadSample(operatorId: string, date: string, client: typeo
     [W, "BK118", "direct", "Charlotte Dubois", 2, "Hilton Kawarau", "+33 6 55 50 11 22", null, ""],
     [W, "BK119", "direct", "Liam Murphy", 2, "Haka House", "+64 21 555 0178", null, "no alcohol please"],
   ];
+  // A small two-day tour so the Tours page and the tour run sheet have something to show.
+  const t0 = new Date(date); t0.setDate(t0.getDate() + 7); const td = (n: number) => { const x = new Date(t0); x.setDate(x.getDate() + n); return x.toISOString().slice(0, 10); };
+  const { data: tour } = await supabase.from("tours").insert({ operator_id: operatorId, name: "Southern Loop · Whitcombe group", start_date: td(0), end_date: td(1), group_pax: 12, status: "confirmed", adults: 8, children: 4, boys: 2, girls: 2, group_notes: "Two families plus four friends. One gluten-free child.", notes: "Uses Sprinter A with the trailer." }).select().single();
+  if (tour) {
+    await supabase.from("rooming").insert([{ operator_id: operatorId, tour_id: tour.id, room_type: "family", occupants: "2 adults + 2 children", count: 2, sequence: 1 }, { operator_id: operatorId, tour_id: tour.id, room_type: "twin", occupants: "Friends", count: 2, sequence: 2 }]);
+    const { data: tdays } = await supabase.from("tour_days").insert([
+      { tour_id: tour.id, operator_id: operatorId, date: td(0), day_number: 1, title: "Queenstown to Franz Josef", overnight_location: "Rainforest Retreat", inclusions: { transport: true, breakfast: true, dinner: true }, overview: "Skyline Gondola first thing, then over Haast Pass to the West Coast. Dinner at Alice May, overnight Rainforest Retreat." },
+      { tour_id: tour.id, operator_id: operatorId, date: td(1), day_number: 2, title: "Franz Josef to Christchurch", overnight_location: "Home", inclusions: { transport: true, breakfast: true, lunch: true }, overview: "Glacier Explorers at 14:00, weather call at 08:00, then Arthur's Pass to Christchurch." },
+    ]).select();
+    const dId = (n: number) => tdays?.find((d) => d.day_number === n)?.id;
+    const st = [
+      [1, "08:30", "Skyline Gondola", "activity", "Brecon St, Queenstown", "03 555 0302", "SG-2231", "Gondola to Bob's Peak plus luge.", [["guide", "Check in 20 min prior, pick up tickets at entrance G"], ["group", "Don't pack the sweaty togs in the checked luggage this morning"]]],
+      [1, "19:00", "Dinner, Alice May", "meal_dinner", "Cowan St, Franz Josef", "03 555 0403", "AM-5566", "Group dinner.", [["guide", "Gluten-free meal pre-ordered"]]],
+      [1, null, "Overnight, Rainforest Retreat", "accommodation", "Cron St, Franz Josef", "03 555 0203", "RR-10921", "Rooming list sent.", []],
+      [2, "14:00", "Glacier Explorers", "activity", "Hermitage Hotel, Mount Cook", "03 555 0301", "GE-5567", "Boat among the icebergs.", [["guide", "Weather call by 08:00"], ["driver", "Coach park is behind the terminal, not the front"]]],
+    ] as const;
+    for (const [n, time, name, category, address, phone, reference, blurb, notes] of st) {
+      const { data: stop } = await supabase.from("stops").insert({ operator_id: operatorId, tour_id: tour.id, tour_day_id: dId(n), time, name, category, address, phone, reference, blurb }).select().single();
+      if (stop && notes.length) await supabase.from("stop_notes").insert(notes.map(([audience, body]) => ({ stop_id: stop.id, operator_id: operatorId, audience, body })));
+    }
+  }
   await supabase.from("bookings").insert(rows.map(([departure_id, external_ref, source, lead_name, pax, pickup_location, phone, email, notes]) => ({ operator_id: operatorId, departure_id, external_ref, source, lead_name, pax, pickup_location, phone, email, notes: notes || null })));
 }

@@ -63,7 +63,7 @@ export default function Day() {
     const catBy = new Map((sl ?? []).map((x) => [x.id, x.category]));
     const q = supabase.from("supplier_confirmations").select("*, plans!inner(date)").eq("operator_id", operator.id);
     const { data } = supRange === "tour" ? await q.gte("plans.date", date).lte("plans.date", addDays(date, 6)) : await q.eq("plans.date", date);
-    setSupRows((data ?? []).map((s: any) => ({ ...s, plan_date: s.plans?.date, category: catBy.get(s.supplier_id) ?? "other" })));
+    setSupRows((data ?? []).map((s: any) => ({ ...s, plan_date: s.plans?.date, category: s.category ?? catBy.get(s.supplier_id) ?? "other" })));
   }
   useEffect(() => { loadSups(); }, [operator?.id, date, supRange, plan?.id]);
   // ----- charter mode: transport request covering this date -----
