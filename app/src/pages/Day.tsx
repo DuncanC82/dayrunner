@@ -51,7 +51,7 @@ export default function Day() {
       <div className="bar">
         <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ width: 170 }} />
         <span className="muted small">{deps.length} departures · {pax} guests on the manifest</span>
-        <button onClick={run} disabled={busy || deps.length === 0}>{plan ? "Re-plan the day" : "Plan the day"}</button>
+        <button className="primary" onClick={run} disabled={busy || deps.length === 0}>{plan ? "Re-plan the day" : "Plan the day"}</button>
         {plan && <span className="tag t-info">{plan.generated_by} · {plan.status}</span>}
       </div>
       <label>External alerts for the day (weather, road closures, supplier changes)</label>

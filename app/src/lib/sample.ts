@@ -1,7 +1,9 @@
-import { supabase } from "./supabase";
+import { supabase as defaultClient } from "./supabase.ts";
+const supabase = defaultClient;
 
 /** Loads a realistic Queenstown sample operator into the workspace so a new account demos in one click. */
-export async function loadSample(operatorId: string, date: string) {
+export async function loadSample(operatorId: string, date: string, client: typeof supabase = supabase) {
+  const supabase = client;
   await supabase.from("operators").update({ name: "Remarkables Day Tours", stop_order: ["Holiday Inn Frankton", "Hilton Kawarau", "Rees Hotel", "Sofitel", "Crowne Plaza", "Novotel Lakeside", "Haka House", "Queenstown i-SITE"] }).eq("id", operatorId);
   const { data: staff } = await supabase.from("staff").insert([
     { operator_id: operatorId, name: "Tane", licence_class: 2, max_hours: 12, skills: ["milford", "glenorchy", "wine"], notes: "Best Milford guide. 4 Milford days this week already." },

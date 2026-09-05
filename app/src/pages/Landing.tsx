@@ -5,13 +5,13 @@ export default function Landing() {
     <div className="land">
       <nav className="nav">
         <div className="brand">DayRunner</div>
-        <div className="stack"><Link className="btn ghost" to="/signin">Sign in</Link><Link className="btn" to="/signup">Start free</Link></div>
+        <div className="stack"><Link className="btn ghost" to="/signin">Sign in</Link><Link className="btn primary" to="/signup">Start free</Link></div>
       </nav>
       <header className="hero">
         <div className="eyebrow">Operations for tour, shuttle and rental operators</div>
-        <h1>Your booking system knows who's coming tomorrow. It has no idea how you'll get them there.</h1>
+        <h1>Your booking system knows who's coming tomorrow. <em>It has no idea how you'll get them there.</em></h1>
         <p>DayRunner plugs into Rezdy, FareHarbor or Rental Car Manager and runs the day: allocates drivers, guides and vehicles against real constraints, drafts every pickup message, lists what to confirm with suppliers, and flags the three things a human still has to decide. Nothing sends until you approve it.</p>
-        <div className="stack"><Link className="btn" to="/signup">Run tomorrow in 5 minutes</Link><a className="btn ghost" href="#how">See how it works</a></div>
+        <div className="stack"><Link className="btn primary" to="/signup">Run tomorrow in 5 minutes</Link><a className="btn ghost" href="#how">See how it works</a></div>
       </header>
 
       <section>
