@@ -89,7 +89,8 @@ Deno.serve(async (req) => {
     // Group digest
     const totalPax = runs.reduce((n, r) => n + (r.a.pax || 0), 0);
     const digestLines = runs.map(({ a, d }) => { const t = String(d.time).slice(0, 5); const fp = (a.pickup_sequence ?? [])[0]?.time; return `${t} ${d.product_name} · ${a.driver_label ?? "NO DRIVER"} · ${a.vehicle_label ?? "NO VEHICLE"} · ${a.pax} pax${fp ? ` · first pickup ${fp}` : ""}`; });
-    const unassigned = runs.filter((r) => r.a.pax > 0 && (!r.a.driver_id || !r.a.vehicle_id)).map((r) => `${String(r.d.time).slice(0, 5)} ${r.d.product_name} needs ${!r.a.driver_id && !r.a.vehicle_id ? "a driver and a vehicle" : !r.a.driver_id ? "a driver" : "a vehicle"}.`);
+    const hasD = (a: any) => !!(a.driver_id || a.driver_label); const hasV = (a: any) => !!(a.vehicle_id || (a.vehicle_label && !/^(Requested|No transport)/.test(a.vehicle_label)));
+    const unassigned = runs.filter((r) => r.a.pax > 0 && (!hasD(r.a) || !hasV(r.a))).map((r) => `${String(r.d.time).slice(0, 5)} ${r.d.product_name} needs ${!hasD(r.a) && !hasV(r.a) ? "a driver and a vehicle" : !hasD(r.a) ? "a driver" : "a vehicle"}.`);
     const decide = (excs.data ?? []).filter((e: any) => e.level === "bad").map((e: any) => e.title);
     const digestParts = [`${operator.name} · ${date} · ${runs.length} departures · ${totalPax} pax`, digestLines.join("\n") || "No departures."];
     if (unassigned.length) digestParts.push("Unassigned: " + unassigned.join(" "));
