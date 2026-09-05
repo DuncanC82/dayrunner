@@ -1,0 +1,5 @@
+Order Number,Product Name,Tour Date,Start Time,Customer Name,Quantity,Pickup Location,Customer Phone,Customer Email,Source,Special Requirements
+RZ-88101,Milford Sound Coach & Cruise,2026-09-07,06:45,Anna Schmidt,2,Novotel Lakeside,+49 170 555 0101,anna@example.com,Online,
+RZ-88102,Milford Sound Coach & Cruise,2026-09-07,06:45,Wei Zhang,3,Hilton Kawarau,,,Viator,
+RZ-88103,Glenorchy Half Day,2026-09-07,08:30,Tom Baker,2,Haka House,+64 21 555 0999,,Online,vegetarian
+RZ-88104,Arrowtown & Wine Trail,2026-09-07,13:00,Lucia Romero,4,Sofitel,+34 600 555 022,,GetYourGuide,
