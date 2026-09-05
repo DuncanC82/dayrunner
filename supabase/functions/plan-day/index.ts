@@ -69,14 +69,17 @@ Deno.serve(async (req) => {
       if (pax === 0) { allocations.push({ departure_id: d.id, pax, status: "warn", note: "No bookings. Consider cancelling the departure.", pickup_sequence: [] }); continue; }
 
       // ----- vehicle -----
-      const vehOk = (v: Vehicle) => v.status !== "out" && (vehBusyUntil.get(v.id) ?? -1) <= start && (!needsChildSeat || v.features.some((f) => /child/i.test(f))) && (!needsWheelchair || v.features.some((f) => /wheelchair/i.test(f)));
-      let chosen: Vehicle[] = [];
-      const single = V.filter((v) => vehOk(v) && v.seats >= pax).sort((a, b) => a.seats - b.seats)[0];
-      if (single) chosen = [single];
-      else {
-        const free = V.filter(vehOk).sort((a, b) => b.seats - a.seats);
-        let acc = 0; for (const v of free) { chosen.push(v); acc += v.seats; if (acc >= pax) break; }
-        if (acc < pax) { chosen = []; }
+      const free = (v: Vehicle) => v.status !== "out" && (vehBusyUntil.get(v.id) ?? -1) <= start;
+      const hasFeat = (v: Vehicle, re: RegExp) => v.features.some((f) => re.test(f));
+      const featScore = (v: Vehicle) => (needsChildSeat && !hasFeat(v, /child/i) ? 1 : 0) + (needsWheelchair && !hasFeat(v, /wheelchair/i) ? 1 : 0);
+      // Prefer: healthy single vehicle → split across healthy vehicles → single with a warning → split including warnings.
+      const pickSingle = (pool: Vehicle[]) => pool.filter((v) => v.seats >= pax).sort((a, b) => featScore(a) - featScore(b) || a.seats - b.seats)[0];
+      const pickSplit = (pool: Vehicle[]) => { const out: Vehicle[] = []; let acc = 0; for (const v of [...pool].sort((a, b) => featScore(a) - featScore(b) || b.seats - a.seats)) { out.push(v); acc += v.seats; if (acc >= pax) return out; } return []; };
+      const healthy = V.filter((v) => free(v) && v.status === "ok"); const any = V.filter(free);
+      let chosen: Vehicle[] = []; const s1 = pickSingle(healthy); if (s1) chosen = [s1]; else { const sp = pickSplit(healthy); if (sp.length) chosen = sp; else { const s2 = pickSingle(any); if (s2) chosen = [s2]; else chosen = pickSplit(any); } }
+      if (chosen.length) {
+        if (needsChildSeat && !chosen.some((v) => hasFeat(v, /child/i))) { status = "warn"; notes.push(`Child seat needed: fit one to ${chosen[0].name} before departure.`); }
+        if (needsWheelchair && !chosen.some((v) => hasFeat(v, /wheelchair/i))) { status = "warn"; notes.push(`Folding wheelchair on board: confirm ${chosen[0].name} has boot space.`); }
       }
       if (chosen.length === 0) {
         status = "bad";
