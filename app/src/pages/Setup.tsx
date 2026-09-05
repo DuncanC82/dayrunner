@@ -18,13 +18,13 @@ const list = (s: string) => String(s ?? "").split(",").map((x) => x.trim()).filt
 export default function Setup() {
   const { operator, refresh } = useAuth();
   const [staff, setStaff] = useState<any[]>([]); const [vehicles, setVehicles] = useState<any[]>([]); const [products, setProducts] = useState<any[]>([]); const [suppliers, setSuppliers] = useState<any[]>([]); const [avail, setAvail] = useState<any[]>([]);
-  const [name, setName] = useState(""); const [voice, setVoice] = useState(""); const [stops, setStops] = useState(""); const [info, setInfo] = useState<string | null>(null); const [busy, setBusy] = useState(false);
+  const [name, setName] = useState(""); const [voice, setVoice] = useState(""); const [opsMode, setOpsMode] = useState("fleet"); const [stops, setStops] = useState(""); const [info, setInfo] = useState<string | null>(null); const [busy, setBusy] = useState(false);
   const [avDate, setAvDate] = useState(tomorrow()); const [av, setAv] = useState<any>({});
   const oid = operator?.id;
   async function load() { if (!oid) return; const [s, v, p, su, a] = await Promise.all([supabase.from("staff").select("*").eq("operator_id", oid).order("name"), supabase.from("vehicles").select("*").eq("operator_id", oid).order("name"), supabase.from("products").select("*").eq("operator_id", oid).order("name"), supabase.from("suppliers").select("*").eq("operator_id", oid).order("name"), supabase.from("staff_availability").select("*, staff(name)").eq("operator_id", oid).order("date")]); setStaff(s.data ?? []); setVehicles(v.data ?? []); setProducts(p.data ?? []); setSuppliers(su.data ?? []); setAvail(a.data ?? []); }
-  useEffect(() => { load(); if (operator) { setName(operator.name); setVoice(operator.voice); setStops((operator.stop_order ?? []).join(", ")); } }, [oid]);
+  useEffect(() => { load(); if (operator) { setName(operator.name); setVoice(operator.voice); setStops((operator.stop_order ?? []).join(", ")); setOpsMode(operator.settings?.ops_mode === "charter" ? "charter" : "fleet"); } }, [oid]);
   const del = (t: string) => async (id: string) => { await supabase.from(t).delete().eq("id", id); await load(); };
-  async function saveOp() { await supabase.from("operators").update({ name, voice, stop_order: list(stops) }).eq("id", oid); await refresh(); setInfo("Saved."); }
+  async function saveOp() { await supabase.from("operators").update({ name, voice, stop_order: list(stops), settings: { ...(operator?.settings ?? {}), ops_mode: opsMode } }).eq("id", oid); await refresh(); setInfo("Saved."); }
   async function sample() { if (!oid) return; setBusy(true); await loadSample(oid, tomorrow()); await refresh(); await load(); setBusy(false); setInfo("Sample operator loaded for tomorrow. Go to Day and press Plan the day."); }
 
   return (
@@ -35,7 +35,8 @@ export default function Setup() {
         <div className="grid2">
           <div><label>Operator name</label><input value={name} onChange={(e) => setName(e.target.value)} />
             <label>Pickup stop order (the route that avoids doubling back)</label><input value={stops} onChange={(e) => setStops(e.target.value)} placeholder="Holiday Inn Frankton, Hilton Kawarau, Rees Hotel, Sofitel, Crowne Plaza, Novotel" /></div>
-          <div><label>Message voice</label><textarea value={voice} onChange={(e) => setVoice(e.target.value)} /></div>
+          <div><label>Message voice</label><textarea value={voice} onChange={(e) => setVoice(e.target.value)} />
+            <label>Operating mode</label><select value={opsMode} onChange={(e) => setOpsMode(e.target.value)}><option value="fleet">Fleet: allocate our own vehicles and drivers</option><option value="charter">Charter: request a vehicle and driver from a coach company</option></select></div>
         </div>
         <div className="bar"><button onClick={saveOp}>Save</button>{staff.length === 0 && <button className="ghost" onClick={sample} disabled={busy}>Load the sample operator (Remarkables Day Tours)</button>}</div>
       </div>

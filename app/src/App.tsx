@@ -8,6 +8,7 @@ import Setup from "./pages/Setup";
 import Connectors from "./pages/Connectors";
 import Import from "./pages/Import";
 import Guide from "./pages/Guide";
+import Tour from "./pages/Tour";
 
 function Shell() {
   const { session, operator, loading } = useAuth();
@@ -18,7 +19,7 @@ function Shell() {
       <aside className="side">
         <div className="brand">DayRunner</div>
         <div className="op">{operator?.name ?? "Setting up…"}</div>
-        <NavLink to="/app" end>Day</NavLink><NavLink to="/app/guide">Run sheet</NavLink><NavLink to="/app/import">Import CSV</NavLink><NavLink to="/app/setup">Setup</NavLink><NavLink to="/app/connectors">Connectors</NavLink>
+        <NavLink to="/app" end>Day</NavLink><NavLink to="/app/tours">Tours</NavLink><NavLink to="/app/guide">Run sheet</NavLink><NavLink to="/app/import">Import CSV</NavLink><NavLink to="/app/setup">Setup</NavLink><NavLink to="/app/connectors">Connectors</NavLink>
         <div className="foot"><a href="#" onClick={(e) => { e.preventDefault(); supabase.auth.signOut(); }}>Sign out</a><br />{session.user.email}</div>
       </aside>
       <main className="main"><Outlet /></main>
@@ -33,7 +34,7 @@ export default function App() {
         <Route path="/" element={<Landing />} />
         <Route path="/signin" element={<Auth mode="signin" />} /><Route path="/signup" element={<Auth mode="signup" />} />
         <Route path="/app" element={<Shell />}>
-          <Route index element={<Day />} /><Route path="guide" element={<Guide />} /><Route path="import" element={<Import />} /><Route path="setup" element={<Setup />} /><Route path="connectors" element={<Connectors />} />
+          <Route index element={<Day />} /><Route path="guide" element={<Guide />} /><Route path="tours" element={<Tour />} /><Route path="tours/:id" element={<Tour />} /><Route path="import" element={<Import />} /><Route path="setup" element={<Setup />} /><Route path="connectors" element={<Connectors />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

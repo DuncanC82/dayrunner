@@ -3,7 +3,7 @@ import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { useAuth } from "../lib/auth";
 import { supabase, tomorrow } from "../lib/supabase";
-import { parseItinerary, confirmationDetail, type ItineraryItem } from "../lib/itinerary";
+import { parseItinerary, confirmationDetail, tourFromItinerary, tourNameFromText, writeTour, type ItineraryItem } from "../lib/itinerary";
 
 const FIELDS = ["external_ref", "product", "date", "time", "lead_name", "pax", "pickup_location", "phone", "email", "source", "notes"] as const;
 const guess = (h: string) => { const n = h.toLowerCase(); if (/ref|order|booking ?(id|no|number)|confirmation/.test(n)) return "external_ref"; if (/product|tour|item|experience|activity/.test(n)) return "product"; if (/^date|tour date|start date|departure date|travel date/.test(n)) return "date"; if (/time|start/.test(n)) return "time"; if (/name|customer|lead|guest/.test(n)) return "lead_name"; if (/pax|qty|quantity|guests|people|adults/.test(n)) return "pax"; if (/pickup|hotel|lodging|accommodation/.test(n)) return "pickup_location"; if (/phone|mobile|tel/.test(n)) return "phone"; if (/email/.test(n)) return "email"; if (/source|channel|agent|reseller/.test(n)) return "source"; if (/note|comment|special|request|extra/.test(n)) return "notes"; return ""; };
@@ -37,7 +37,7 @@ export default function Import() {
 
   // ---- itinerary state ----
   const [text, setText] = useState(""); const [startDate, setStartDate] = useState(""); const [groupPax, setGroupPax] = useState<string>("");
-  const [edits, setEdits] = useState<Record<number, Edit>>({});
+  const [edits, setEdits] = useState<Record<number, Edit>>({}); const [asTour, setAsTour] = useState(true);
 
   useEffect(() => { if (!operator) return; supabase.from("operators").select("settings").eq("id", operator.id).single().then(({ data }) => setSavedMap(data?.settings?.import_map ?? {})); }, [operator?.id]);
 
@@ -97,11 +97,16 @@ export default function Import() {
       const { data: existing } = await supabase.from("suppliers").select("id,name,product_names").eq("operator_id", oid);
       const supByName = new Map<string, { id: string; product_names: string[] }>((existing ?? []).map((s) => [String(s.name).toLowerCase(), { id: s.id, product_names: s.product_names ?? [] }]));
       const planByDate = new Map<string, string>(); let deps = 0, sups = 0, confs = 0, bks = 0;
+      // Tour (docs/features/tours.md): tour + days + stops written first so departures can hang off the tour day.
+      let tourIds: Awaited<ReturnType<typeof writeTour>> | null = null;
+      if (asTour) tourIds = await writeTour(supabase, oid, tourFromItinerary(parsed, { name: tourNameFromText(text), text, groupPax: pax, items }));
       for (const it of ready) {
+        const itemIndex = items.indexOf(it); const tourDay = tourIds ? tourIds.dayId.get(it.day) ?? null : null;
         const d = it.date!; const time = it.time ?? (it.category === "accommodation" ? "16:00" : "09:00");
         const { data: prod } = await supabase.from("products").select("id").eq("operator_id", oid).ilike("name", it.activity).maybeSingle();
-        const { data: dep, error: de } = await supabase.from("departures").upsert({ operator_id: oid, product_id: prod?.id ?? null, product_name: it.activity, date: d, time, external_id: it.reference }, { onConflict: "operator_id,date,time,product_name" }).select().single();
+        const { data: dep, error: de } = await supabase.from("departures").upsert({ operator_id: oid, product_id: prod?.id ?? null, product_name: it.activity, date: d, time, external_id: it.reference, ...(tourIds ? { tour_id: tourIds.tourId, tour_day_id: tourDay } : {}) }, { onConflict: "operator_id,date,time,product_name" }).select().single();
         if (de) throw de; deps++;
+        if (tourIds && tourIds.stopByItem.has(itemIndex)) await supabase.from("stops").update({ departure_id: dep.id }).eq("id", tourIds.stopByItem.get(itemIndex));
         if (it.supplier) {
           // supplier: upsert by name; remember the activity in product_names so plan-day keeps emitting this confirmation
           const key = it.supplier.toLowerCase(); const template = `${it.category === "accommodation" ? "Overnight" : it.activity} for {pax} pax at {time} on {date}${it.reference ? ` (ref ${it.reference})` : ""}`;
@@ -121,8 +126,8 @@ export default function Import() {
           const { error: be } = await supabase.from("bookings").upsert({ operator_id: oid, departure_id: dep.id, external_ref: ref, source: "itinerary", lead_name: parsed.guests[0], pax: pax ?? parsed.guests.length, notes: `Group: ${parsed.guests.join(", ")}${it.note ? ` · ${it.note}` : ""}`, raw: { line: it.line, reference: it.reference } }, { onConflict: "operator_id,external_ref" }); if (be) throw be; bks++;
         }
       }
-      await supabase.from("audit_log").insert({ operator_id: oid, actor: "import", action: "itinerary.imported", entity: "departures", detail: { departures: deps, suppliers_created: sups, confirmations: confs, bookings: bks, dates: [...planByDate.keys()] } });
-      setMsg(`Imported ${deps} departures, ${sups} new suppliers, ${confs} supplier confirmations${bks ? `, ${bks} group bookings` : " (no guest names found, so no bookings)"} across ${new Set(ready.map((u) => u.date)).size} day(s). Go to Day, pick the date and plan.`);
+      await supabase.from("audit_log").insert({ operator_id: oid, actor: "import", action: "itinerary.imported", entity: "departures", detail: { departures: deps, suppliers_created: sups, confirmations: confs, bookings: bks, tour_id: tourIds?.tourId ?? null, dates: [...planByDate.keys()] } });
+      setMsg(`${tourIds ? `Created tour "${tourNameFromText(text)}" (see Tours). ` : ""}Imported ${deps} departures, ${sups} new suppliers, ${confs} supplier confirmations${bks ? `, ${bks} group bookings` : " (no guest names found, so no bookings)"} across ${new Set(ready.map((u) => u.date)).size} day(s). Go to Day, pick the date and plan.`);
     } catch (e: any) { setErr(e.message ?? String(e)); } finally { setBusy(false); }
   }
 
@@ -167,7 +172,7 @@ export default function Import() {
             </tr>)}
           </tbody></table></div>
           {parsed.skipped.length > 0 && <details><summary className="muted">Skipped lines ({parsed.skipped.length})</summary><ul className="muted">{parsed.skipped.map((s, i) => <li key={i}>{s}</li>)}</ul></details>}
-          <div className="bar"><button onClick={runItinerary} disabled={busy || !ready.length}>Create {ready.length} departures and suppliers</button>{items.some((i) => !i.skip && !i.date) && <span className="muted">Lines without a date are not imported. Set the Day 1 date.</span>}</div>
+          <div className="bar"><button onClick={runItinerary} disabled={busy || !ready.length}>Create {ready.length} departures and suppliers</button><label style={{ margin: 0, display: "flex", alignItems: "center", gap: 6, textTransform: "none", fontSize: ".85rem" }}><input type="checkbox" checked={asTour} onChange={(e) => setAsTour(e.target.checked)} style={{ width: "auto" }} />Create as a tour</label>{items.some((i) => !i.skip && !i.date) && <span className="muted">Lines without a date are not imported. Set the Day 1 date.</span>}</div>
         </>}
       </>}
     </div>

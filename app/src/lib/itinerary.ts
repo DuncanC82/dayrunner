@@ -188,3 +188,86 @@ export function confirmationDetail(i: ItineraryItem, pax: number | null): string
   if (i.note) bits.push(i.note);
   return bits.join(", ");
 }
+
+// ---------------------------------------------------------------------------
+// Tours (docs/features/tours.md): turn a parse into tour + tour_days + stops.
+
+export type StopCategory = "activity" | "meal_breakfast" | "meal_lunch" | "meal_dinner" | "accommodation" | "transport" | "other";
+
+export type TourDraft = {
+  tour: { name: string; start_date: string | null; end_date: string | null; group_pax: number | null; status: string; notes: string | null };
+  days: { day_number: number; date: string | null; title: string | null; overnight_location: string | null }[];
+  stops: { day_number: number; time: string | null; name: string; category: StopCategory; supplier: string | null; reference: string | null; blurb: string | null; sequence: number; itemIndex: number }[];
+};
+
+/** Map a parsed item to a stop category: meals split by meal word, stays to accommodation. */
+export function stopCategory(i: Pick<ItineraryItem, "category" | "activity" | "line">): StopCategory {
+  if (i.category === "accommodation") return "accommodation";
+  if (i.category === "meal") {
+    const t = `${i.activity} ${i.line}`.toLowerCase();
+    if (/breakfast|brunch/.test(t)) return "meal_breakfast";
+    if (/dinner|supper/.test(t)) return "meal_dinner";
+    return "meal_lunch";
+  }
+  return "activity";
+}
+
+/** Tour name: the first non-empty line of the paste before any day header, else a fallback. */
+export function tourNameFromText(text: string, fallback = "Imported tour"): string {
+  const first = text.replace(/\r/g, "").split("\n").map((l) => l.trim()).find(Boolean);
+  if (!first || /^(?:day|d)\s*\d/i.test(first) || findDate(first)) return fallback;
+  return first.replace(/\s*[–—-]\s*.*$/, "").slice(0, 80) || fallback;
+}
+
+/**
+ * Build the rows for a tour from a parse. Pure; the caller writes them (see `writeTour`).
+ * Items with `skip` are left out. Day titles come from the day-header text after the date when
+ * available in `opts.dayTitles`, else null. Overnight location = the accommodation supplier for the day.
+ */
+export function tourFromItinerary(parse: Pick<ItineraryParse, "items" | "groupPax">, opts: { name: string; text?: string; groupPax?: number | null; items?: (ItineraryItem & { skip?: boolean })[] } ): TourDraft {
+  const items = (opts.items ?? parse.items).map((it, i) => ({ it, i })).filter(({ it }) => !(it as any).skip);
+  const dayNums = [...new Set(items.map(({ it }) => it.day))].sort((a, b) => a - b);
+  const dateOf = (d: number) => items.find(({ it }) => it.day === d && it.date)?.it.date ?? null;
+  const titles = opts.text ? dayTitles(opts.text) : new Map<number, string>();
+  const days = dayNums.map((d) => ({
+    day_number: d, date: dateOf(d), title: titles.get(d) ?? null,
+    overnight_location: items.find(({ it }) => it.day === d && it.category === "accommodation")?.it.supplier ?? null,
+  }));
+  const stops: TourDraft["stops"] = []; const seq = new Map<number, number>();
+  for (const { it, i } of items) {
+    const s = (seq.get(it.day) ?? 0) + 1; seq.set(it.day, s);
+    const name = it.category === "accommodation" ? `Overnight – ${it.supplier ?? it.activity}` : (it.supplier && it.supplier !== it.activity ? `${it.activity} – ${it.supplier}` : it.activity);
+    stops.push({ day_number: it.day, time: it.time, name, category: stopCategory(it), supplier: it.supplier, reference: it.reference, blurb: it.note, sequence: s, itemIndex: i });
+  }
+  const dates = days.map((d) => d.date).filter((d): d is string => !!d).sort();
+  return { tour: { name: opts.name, start_date: dates[0] ?? null, end_date: dates[dates.length - 1] ?? null, group_pax: opts.groupPax ?? parse.groupPax ?? null, status: "draft", notes: null }, days, stops };
+}
+
+/** "Day 1 – Monday 12 October 2026 – Queenstown to Franz Josef" → { 1: "Queenstown to Franz Josef" }. */
+export function dayTitles(text: string): Map<number, string> {
+  const out = new Map<number, string>(); let n = 0;
+  for (const raw of text.replace(/\r/g, "").split("\n")) {
+    const m = raw.trim().match(/^(?:day|d)\s*(\d{1,2})\b(.*)$/i); if (!m) continue;
+    n = +m[1]; const parts = m[2].split(/\s+[–—-]\s+/).map((p) => p.trim()).filter(Boolean);
+    const title = parts.filter((p) => !findDate(p) && !/^(mon|tue|wed|thu|fri|sat|sun)/i.test(p)).pop();
+    if (title) out.set(n, title);
+  }
+  return out;
+}
+
+/**
+ * Write a TourDraft with a supabase client. Returns ids so the caller can link departures
+ * (`departures.tour_id` / `tour_day_id`) by itemIndex. Suppliers are linked by case-insensitive name.
+ */
+export async function writeTour(sb: any, operatorId: string, draft: TourDraft, notes: { itemIndex: number; audience: "guide" | "group" | "office" | "driver"; body: string }[] = []) {
+  const { data: tour, error: te } = await sb.from("tours").insert({ operator_id: operatorId, ...draft.tour }).select().single(); if (te) throw te;
+  const { data: days, error: de } = await sb.from("tour_days").insert(draft.days.map((d) => ({ ...d, tour_id: tour.id, operator_id: operatorId }))).select(); if (de) throw de;
+  const dayId = new Map<number, string>((days ?? []).map((d: any) => [d.day_number, d.id]));
+  const { data: sups } = await sb.from("suppliers").select("id,name,contact,email").eq("operator_id", operatorId);
+  const supByName = new Map<string, any>((sups ?? []).map((s: any) => [String(s.name).toLowerCase(), s]));
+  const rows = draft.stops.map((s) => { const sup = s.supplier ? supByName.get(s.supplier.toLowerCase()) : null; return { operator_id: operatorId, tour_id: tour.id, tour_day_id: dayId.get(s.day_number), time: s.time, name: s.name, category: s.category, supplier_id: sup?.id ?? null, phone: sup?.contact && /\d{5,}/.test(sup.contact) ? sup.contact : null, address: null, reference: s.reference, blurb: s.blurb, sequence: s.sequence }; });
+  const { data: stops, error: se } = await sb.from("stops").insert(rows).select(); if (se) throw se;
+  const stopByItem = new Map<number, string>(draft.stops.map((s, k) => [s.itemIndex, stops[k].id]));
+  if (notes.length) { const { error: ne } = await sb.from("stop_notes").insert(notes.filter((n) => stopByItem.has(n.itemIndex)).map((n) => ({ operator_id: operatorId, stop_id: stopByItem.get(n.itemIndex), audience: n.audience, body: n.body }))); if (ne) throw ne; }
+  return { tourId: tour.id as string, dayId, stopByItem };
+}

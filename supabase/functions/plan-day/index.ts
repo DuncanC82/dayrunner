@@ -55,6 +55,12 @@ Deno.serve(async (req) => {
     if (op.error) return json({ error: op.error.message }, 500);
     const operator = op.data;
     const rule = Object.fromEntries((rules.data ?? []).map((r: any) => [r.key, r.value]));
+    // Charter mode: the vehicle is a request to a coach company, not an allocation from our fleet (docs/features/charter-mode.md).
+    const charter = operator.settings?.ops_mode === "charter";
+    const { data: trRows } = charter ? await db.from("transport_requests").select("*").eq("operator_id", operator_id).lte("date_from", date).gte("date_to", date).neq("status", "declined") : { data: [] as any[] };
+    const trRank: Record<string, number> = { confirmed: 0, requested: 1, pending: 2 };
+    const tr: any = (trRows ?? []).sort((a: any, b: any) => (trRank[a.status] ?? 9) - (trRank[b.status] ?? 9))[0] ?? null;
+    let charterFlagged = false;
     const regime: "logbook" | "none" = rule.worktime_regime === "none" ? "none" : "logbook";
     const kmPerStop = Number(rule.km_per_stop ?? 4);
     const prepMin = Number(rule.prep_minutes ?? 15);
@@ -90,7 +96,7 @@ Deno.serve(async (req) => {
       .sort((a, b) => mins(a.d.time) - mins(b.d.time) || (b.p?.duration_minutes ?? 240) - (a.p?.duration_minutes ?? 240));
 
     // vehicle warnings
-    for (const v of V) if (v.status === "out") exceptions.push({ level: "warn", title: `${v.name} is out of service`, detail: v.notes ?? "Marked out of service in the fleet list.", options: ["Return to service when fixed", "Hire a replacement"] });
+    if (!charter) for (const v of V) if (v.status === "out") exceptions.push({ level: "warn", title: `${v.name} is out of service`, detail: v.notes ?? "Marked out of service in the fleet list.", options: ["Return to service when fixed", "Hire a replacement"] });
 
     for (const { d, p, bk } of work) {
       const pax = bk.reduce((a, b) => a + (b.pax || 0), 0);
@@ -117,6 +123,27 @@ Deno.serve(async (req) => {
       // Work window for whoever runs this departure: prep -> pickup run -> tour -> return + prep.
       const shiftStart = (stops.length ? first : start) - prepMin; const shiftEnd = end + prepMin;
       const routeKm = Number(d.route_km ?? p?.route_km ?? 0); const runKm = stops.length * kmPerStop + routeKm;
+
+      // ----- charter: vehicle + driver come from the transport request, no fleet/roster allocation, no work-time checks -----
+      if (charter) {
+        let vehicle_label: string; let driver_label: string | null = null;
+        if (tr?.status === "confirmed") {
+          vehicle_label = tr.vehicle_spec;
+          driver_label = tr.driver_name ? `${tr.driver_name}${tr.driver_phone ? ` · ${tr.driver_phone}` : ""} (charter driver)` : "Driver TBC by coach company";
+          if (tr.price != null) notes.push(`Charter ${tr.currency ?? "NZD"} ${tr.price}${tr.driver_meals_included ? ", driver meals included" : ""}${tr.driver_accommodation_included ? ", driver accommodation included" : ""}.`);
+        } else if (tr) {
+          vehicle_label = `Requested: ${tr.vehicle_spec}`; status = "warn";
+          notes.push(tr.status === "requested" ? "Coach company has not confirmed yet." : "Transport request drafted but not sent.");
+          if (!charterFlagged) { charterFlagged = true; exceptions.push({ level: "warn", title: `Transport not confirmed for ${date}`, detail: `${tr.vehicle_spec} is ${tr.status === "requested" ? "requested from the coach company but unconfirmed" : "drafted but not yet requested"}.`, options: [tr.status === "requested" ? "Chase the coach company" : "Send the request", "Mark confirmed when they reply"] }); }
+        } else {
+          vehicle_label = "No transport requested"; status = "bad";
+          notes.push("No transport request covers this date.");
+          if (!charterFlagged) { charterFlagged = true; exceptions.push({ level: "bad", title: `No transport requested for ${date}`, detail: "Charter mode: no transport request covers this date, so there is no vehicle or driver for these departures.", options: ["Request a vehicle", "Switch to fleet mode in Setup"] }); }
+        }
+        allocations.push({ departure_id: d.id, pax, status, vehicle_id: null, vehicle_label, driver_id: null, driver_label, guide_id: null, guide_label: null, pickup_sequence: stops, km: Math.round(runKm * 10) / 10, work_minutes: null, breaks: [], note: notes.join(" ") || null, _dep: d });
+        pushMessagesAndSuppliers(d, bk, pax, status, needsChildSeat, pickupTimeFor);
+        continue;
+      }
 
       // ----- vehicle -----
       const free = (v: Vehicle) => v.status !== "out" && (vehBusyUntil.get(v.id) ?? -1) <= shiftStart;
@@ -184,7 +211,11 @@ Deno.serve(async (req) => {
 
       allocations.push({ departure_id: d.id, pax, status, vehicle_id: chosen[0]?.id ?? null, vehicle_label: chosen.map((v) => v.name).join(" + ") || null, driver_id: drivers[0]?.id ?? null, driver_label: drivers.map((s) => s.name).join(", ") || null, guide_id: guide?.id ?? drivers[0]?.id ?? null, guide_label: guide?.name ?? (drivers[0] ? `${drivers[0].name} (driver-guide)` : null), pickup_sequence: stops, km: Math.round(runKm * 10) / 10, work_minutes: depWork || null, breaks: depBreaks, note: [...notes, ...driverNotes].join(" ") || null, _dep: d });
 
-      // ----- messages -----
+      pushMessagesAndSuppliers(d, bk, pax, status, needsChildSeat, pickupTimeFor);
+    }
+
+    // ----- messages + suppliers (shared by fleet and charter branches) -----
+    function pushMessagesAndSuppliers(d: Departure, bk: Booking[], pax: number, status: string, needsChildSeat: boolean, pickupTimeFor: (b: Booking) => string) {
       const held = status === "bad";
       for (const b of bk) {
         const t = pickupTimeFor(b); const where = b.pickup_location ?? "our depot";
@@ -225,7 +256,7 @@ Deno.serve(async (req) => {
 
     // ----- persist -----
     await db.from("plans").delete().eq("operator_id", operator_id).eq("date", date);
-    const summary = { departures: deps.length, pax: bookings.reduce((a, b) => a + b.pax, 0), km: Math.round([...kmBy.values()].reduce((a, b) => a + b, 0)), work_hours: Math.round([...ledgers.values()].reduce((a, l) => a + l.dayMinutes, 0) / 6) / 10, worktime_regime: regime, messages: messages.length, exceptions: exceptions.filter((e) => e.level === "bad").length, warnings: exceptions.filter((e) => e.level === "warn").length, narrative: (globalThis as any).__summary ?? null };
+    const summary = { departures: deps.length, pax: bookings.reduce((a, b) => a + b.pax, 0), km: Math.round([...kmBy.values()].reduce((a, b) => a + b, 0)), work_hours: Math.round([...ledgers.values()].reduce((a, l) => a + l.dayMinutes, 0) / 6) / 10, worktime_regime: regime, ops_mode: charter ? "charter" : "fleet", transport_request_id: tr?.id ?? null, messages: messages.length, exceptions: exceptions.filter((e) => e.level === "bad").length, warnings: exceptions.filter((e) => e.level === "warn").length, narrative: (globalThis as any).__summary ?? null };
     const { data: plan, error: pe } = await db.from("plans").insert({ operator_id, date, status: "draft", generated_by, summary, alerts: alerts ?? null }).select().single();
     if (pe) return json({ error: pe.message }, 500);
     const pid = plan.id;
@@ -235,6 +266,7 @@ Deno.serve(async (req) => {
     if (exceptions.length) await db.from("exceptions").insert(exceptions.map((e) => ({ ...e, plan_id: pid, operator_id })));
     // Planned work per driver for D, so the 70h check sees it on later days. Source 'plan' is replaced on every re-plan.
     const logs = [...ledgers.entries()].filter(([, l]) => l.dayMinutes > 0).map(([staff_id, l]) => ({ operator_id, staff_id, date, minutes_work: Math.round(l.dayMinutes - Number(S.find((x) => x.id === staff_id)?.prior_work_minutes_today ?? 0)), minutes_drive: 0, km: Math.round((kmBy.get(staff_id) ?? 0) * 10) / 10, source: "plan", start_minute: firstStart.get(staff_id) ?? null, finish_minute: l.lastEnd }));
+    await db.from("work_log").delete().eq("operator_id", operator_id).eq("date", date).eq("source", "plan");  // stale planned rows (e.g. after switching to charter) must not linger
     if (logs.length) await db.from("work_log").upsert(logs, { onConflict: "staff_id,date,source" });
     await audit(operator_id, userId, "plan.generated", "plan", pid, summary);
     return json({ plan_id: pid, summary });
