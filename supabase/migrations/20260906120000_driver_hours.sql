@@ -31,3 +31,7 @@ alter table public.allocations add column if not exists breaks jsonb not null de
 --   worktime_regime  'logbook' | 'none'   (default 'logbook')
 --   km_per_stop      numeric              (default 4)
 --   prep_minutes     integer              (default 15, applied before pickups and after return)
+
+-- 10h continuous rest: record each driver's planned start/finish so the next day's plan can check the gap.
+alter table public.work_log add column if not exists start_minute integer;
+alter table public.work_log add column if not exists finish_minute integer;

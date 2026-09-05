@@ -16,7 +16,7 @@ const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
 // ----- NZ work time (Land Transport Rule: Work Time and Logbooks 2007) -----
 // 5.5h continuous work -> 30 min break; 13h in a cumulative work day; 70h in a cumulative work period (then 24h off).
-const WT = { CONTINUOUS: 330, BREAK: 30, DAY: 780, PERIOD: 4200, PERIOD_DAYS: 14 };
+const WT = { CONTINUOUS: 330, BREAK: 30, DAY: 780, PERIOD: 4200, PERIOD_DAYS: 14, REST: 600 };
 const RULE_NAME = "Land Transport Rule: Work Time and Logbooks 2007";
 type Ledger = { dayMinutes: number; continuous: number; lastEnd: number | null; prior14: number };
 type Shift = { start: number; end: number; work: number; contEnd: number; breaks: { after: string; minutes: number }[] };
@@ -69,6 +69,11 @@ Deno.serve(async (req) => {
     const since = new Date(date + "T00:00:00Z"); since.setUTCDate(since.getUTCDate() - (WT.PERIOD_DAYS - 1));
     const { data: logRows } = await db.from("work_log").select("staff_id, minutes_work").eq("operator_id", operator_id).gte("date", since.toISOString().slice(0, 10)).lt("date", date);
     const prior14 = new Map<string, number>(); for (const r of (logRows ?? []) as any[]) prior14.set(r.staff_id, (prior14.get(r.staff_id) ?? 0) + Number(r.minutes_work || 0));
+    // 10h continuous rest: yesterday's finish per driver (planned or logged), so an early start after a late finish is caught.
+    const prevDay = new Date(date + "T00:00:00Z"); prevDay.setUTCDate(prevDay.getUTCDate() - 1);
+    const { data: prevRows } = await db.from("work_log").select("staff_id, finish_minute, source").eq("operator_id", operator_id).eq("date", prevDay.toISOString().slice(0, 10)).not("finish_minute", "is", null);
+    const prevFinish = new Map<string, number>(); for (const r of (prevRows ?? []) as any[]) prevFinish.set(r.staff_id, Math.max(prevFinish.get(r.staff_id) ?? 0, Number(r.finish_minute)));
+    const firstStart = new Map<string, number>();
     const S: Staff[] = staff.data ?? []; const V: Vehicle[] = vehicles.data ?? []; const P: Product[] = products.data ?? []; const SUP: Supplier[] = suppliers.data ?? [];
     const availBy = new Map<string, Avail>(); for (const a of (avail.data ?? []) as Avail[]) availBy.set(a.staff_id, a);
     const prodOf = (d: Departure) => P.find((p) => p.id === d.product_id) ?? P.find((p) => norm(p.name) === norm(d.product_name)) ?? null;
@@ -158,10 +163,14 @@ Deno.serve(async (req) => {
         // Enforce the 13h cumulative work day: prefer a driver who stays legal; fall back to the least-loaded and raise.
         const dayCap = (s: Staff) => regime === "logbook" ? Math.min(WT.DAY, Math.round(s.max_hours * 60)) : Math.round(s.max_hours * 60);
         const fits = (s: Staff) => ledger(s).dayMinutes + planShift(ledger(s), shiftStart, shiftEnd).work <= dayCap(s);
-        const pick = cands.find(fits) ?? cands[0];
+        const restGap = (s: Staff) => { const f = prevFinish.get(s.id); return f == null ? null : (1440 - f) + shiftStart; };
+        const rested = (s: Staff) => regime !== "logbook" || restGap(s) === null || (restGap(s) as number) >= WT.REST;
+        const pick = cands.find((s) => fits(s) && rested(s)) ?? cands.find(fits) ?? cands[0];
         if (!pick) { status = "bad"; exceptions.push({ level: "bad", title: `${d.time.slice(0, 5)} ${d.product_name}: no driver for ${v.name}`, detail: `No available driver holds a class ${v.licence_required} licence with P endorsement and free hours from ${d.time.slice(0, 5)} to ${hhmm(end)}.`, options: ["Call a casual", "Swap a driver from a later departure", "Cancel this departure"] }); continue; }
         drivers.push(pick);
         const L = ledger(pick); const sh = planShift(L, shiftStart, shiftEnd); commit(L, sh); busyUntil.set(pick.id, shiftEnd);
+        if (!firstStart.has(pick.id)) firstStart.set(pick.id, shiftStart);
+        if (!rested(pick)) { status = "bad"; const gap = restGap(pick) as number; exceptions.push({ level: "bad", title: `${pick.name} would get only ${h(gap)} rest before ${d.time.slice(0, 5)} ${d.product_name}`, detail: `${RULE_NAME}: 10 hours continuous rest is required after a cumulative work day. ${pick.name} finished at ${hhmm(prevFinish.get(pick.id) as number)} yesterday and this shift starts at ${hhmm(shiftStart)} (prep included).`, options: ["Swap for a driver who finished earlier yesterday", "Push this departure later", "Have a second driver do the pickups and start", "Correct yesterday's finish time in the work log"] }); driverNotes.push(`${pick.name} short of 10h rest (${h(gap)}).`); }
         kmBy.set(pick.id, (kmBy.get(pick.id) ?? 0) + runKm);
         depWork = Math.max(depWork, sh.work); depBreaks = sh.breaks;
         if (sh.breaks.length) driverNotes.push(`${pick.name}: 30 min break required after ${sh.breaks.map((b) => b.after).join(" and ")} (5.5h continuous work).`);
@@ -225,7 +234,7 @@ Deno.serve(async (req) => {
     if (confirmations.length) await db.from("supplier_confirmations").insert(confirmations.map((c) => ({ ...c, plan_id: pid, operator_id })));
     if (exceptions.length) await db.from("exceptions").insert(exceptions.map((e) => ({ ...e, plan_id: pid, operator_id })));
     // Planned work per driver for D, so the 70h check sees it on later days. Source 'plan' is replaced on every re-plan.
-    const logs = [...ledgers.entries()].filter(([, l]) => l.dayMinutes > 0).map(([staff_id, l]) => ({ operator_id, staff_id, date, minutes_work: Math.round(l.dayMinutes - Number(S.find((x) => x.id === staff_id)?.prior_work_minutes_today ?? 0)), minutes_drive: 0, km: Math.round((kmBy.get(staff_id) ?? 0) * 10) / 10, source: "plan" }));
+    const logs = [...ledgers.entries()].filter(([, l]) => l.dayMinutes > 0).map(([staff_id, l]) => ({ operator_id, staff_id, date, minutes_work: Math.round(l.dayMinutes - Number(S.find((x) => x.id === staff_id)?.prior_work_minutes_today ?? 0)), minutes_drive: 0, km: Math.round((kmBy.get(staff_id) ?? 0) * 10) / 10, source: "plan", start_minute: firstStart.get(staff_id) ?? null, finish_minute: l.lastEnd }));
     if (logs.length) await db.from("work_log").upsert(logs, { onConflict: "staff_id,date,source" });
     await audit(operator_id, userId, "plan.generated", "plan", pid, summary);
     return json({ plan_id: pid, summary });
