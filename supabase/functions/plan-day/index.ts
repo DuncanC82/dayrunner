@@ -70,6 +70,10 @@ Deno.serve(async (req) => {
     const depIds = deps.map((d) => d.id);
     const { data: bookingsAll } = await db.from("bookings").select("*").eq("operator_id", operator_id).in("departure_id", depIds).neq("status", "cancelled");
     const bookings: Booking[] = bookingsAll ?? [];
+    // Tour-day stops with a supplier, fetched once so the (non-async) departure helper can use them.
+    const tourDayIds = deps.map((d: any) => d.tour_day_id).filter(Boolean);
+    const { data: tourStopRows } = tourDayIds.length ? await db.from("stops").select("tour_day_id, time, name, reference, supplier_id, category").in("tour_day_id", tourDayIds).not("supplier_id", "is", null).order("time") : { data: [] as any[] };
+    const stopsByDay = new Map<string, any[]>(); for (const r of (tourStopRows ?? []) as any[]) { if (!stopsByDay.has(r.tour_day_id)) stopsByDay.set(r.tour_day_id, []); stopsByDay.get(r.tour_day_id)!.push(r); }
 
     // Cumulative work period: work_log minutes over the 13 days before D (14-day window including D).
     const since = new Date(date + "T00:00:00Z"); since.setUTCDate(since.getUTCDate() - (WT.PERIOD_DAYS - 1));
@@ -238,6 +242,16 @@ Deno.serve(async (req) => {
         const dietary = bk.filter((b) => /vegetarian|vegan|gluten|dairy|allerg/i.test(b.notes ?? "")).length;
         const detail = s.detail_template.replace("{date}", date).replace("{pax}", String(pax)).replace("{product}", d.product_name).replace("{time}", d.time.slice(0, 5)) + (dietary ? ` (${dietary} dietary)` : "");
         confirmations.push({ supplier_id: s.id, supplier_name: s.name, detail, due_label: s.confirm_by, status: held ? "hold" : "pending" });
+      }
+      // Tour days: every stop with a supplier is a confirmation, with the stop's time, name and reference.
+      if ((d as any).tour_day_id) {
+        const dayStops = stopsByDay.get((d as any).tour_day_id) ?? [];
+        const dietary = bk.filter((b) => /vegetarian|vegan|gluten|dairy|allerg/i.test(b.notes ?? "")).length;
+        for (const st of (dayStops ?? []) as any[]) {
+          const sup = SUP.find((x) => x.id === st.supplier_id); if (!sup) continue;
+          const detail = `${st.time ? String(st.time).slice(0, 5) + " " : ""}${st.name}${st.reference ? ` (ref ${st.reference})` : ""}: ${pax} pax on ${date}${dietary && /meal|accommodation/.test(st.category) ? ` (${dietary} dietary)` : ""}`;
+          if (!confirmations.some((c) => c.supplier_id === sup.id && c.detail === detail)) confirmations.push({ supplier_id: sup.id, supplier_name: sup.name, detail, due_label: sup.confirm_by, status: held ? "hold" : "pending" });
+        }
       }
     }
 

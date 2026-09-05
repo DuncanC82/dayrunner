@@ -64,11 +64,21 @@ Deno.serve(async (req) => {
         return lines.join("\n");
       });
       const parts = [`Kia ora ${first(p.staff.name)}, your run for ${date} with ${operator.name}:`, ...blocks];
+      if (driverNotes.length && level < 3) parts.push("Driver notes:\n" + driverNotes.join("\n"));
       if (alert) parts.push(`Alert: ${alert}.`);
       parts.push(`Run sheet: ${link}\nReply 1 when you've read this.`);
       return parts.join("\n\n");
     };
     const fit = (p: any) => { for (let l = 0; l <= 3; l++) { const b = compose(p, l); if (b.length <= MAX) return b; } return compose(p, 3).slice(0, MAX - 1) + "…"; };
+
+    // Charter mode: the coach company's driver is not staff; brief them from the confirmed transport request, with the day's DRIVER notes.
+    if (operator?.settings?.ops_mode === "charter" && byPerson.size === 0) {
+      const { data: tr } = await db.from("transport_requests").select("*").eq("operator_id", operator_id).lte("date_from", plan.date).gte("date_to", plan.date).eq("status", "confirmed").order("created_at", { ascending: false }).limit(1).maybeSingle();
+      if (tr?.driver_name) byPerson.set("charter", { staff: { id: "charter", name: tr.driver_name, phone: tr.driver_phone ?? null }, runs: runs.map((r) => ({ ...r, role: "driver" as const })) });
+    }
+    const dayIds = D.map((d) => d.tour_day_id).filter(Boolean);
+    const driverNotes: string[] = [];
+    if (dayIds.length) { const { data: sn } = await db.from("stop_notes").select("body, stops!inner(name, time, tour_day_id)").eq("audience", "driver").in("stops.tour_day_id", dayIds); for (const n of (sn ?? []) as any[]) driverNotes.push(`${n.stops?.time ? String(n.stops.time).slice(0, 5) + " " : ""}${n.stops?.name}: ${n.body}`); }
 
     const messages: any[] = [];
     for (const p of byPerson.values()) {
