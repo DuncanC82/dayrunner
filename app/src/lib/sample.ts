@@ -21,15 +21,15 @@ export async function loadSample(operatorId: string, date: string, client: typeo
     { operator_id: operatorId, name: "Highlander", seats: 7, licence_required: 1, status: "ok", features: ["wheelchair"] },
   ]);
   const { data: products } = await supabase.from("products").insert([
-    { operator_id: operatorId, name: "Milford Sound Coach & Cruise", duration_minutes: 780, skills_required: ["milford"], pickup_lead_minutes: 25 },
-    { operator_id: operatorId, name: "Glenorchy Half Day", duration_minutes: 255, skills_required: ["glenorchy"], pickup_lead_minutes: 25 },
-    { operator_id: operatorId, name: "Arrowtown & Wine Trail", duration_minutes: 300, skills_required: ["wine"], pickup_lead_minutes: 20 },
+    { operator_id: operatorId, name: "Milford Sound Coach & Cruise", duration_minutes: 780, skills_required: ["milford"], pickup_lead_minutes: 25, route_km: 580 },
+    { operator_id: operatorId, name: "Glenorchy Half Day", duration_minutes: 255, skills_required: ["glenorchy"], pickup_lead_minutes: 25, route_km: 95 },
+    { operator_id: operatorId, name: "Arrowtown & Wine Trail", duration_minutes: 300, skills_required: ["wine"], pickup_lead_minutes: 20, route_km: 60 },
   ]).select();
   await supabase.from("suppliers").insert([
-    { operator_id: operatorId, name: "Milford Sound Lodge cafe", channel: "email", contact: "cafe@example.co.nz", product_names: ["Milford"], detail_template: "Lunch numbers for {date}: {pax} pax", confirm_by: "17:00 day before" },
-    { operator_id: operatorId, name: "Southern Discoveries", channel: "email", contact: "manifests@example.co.nz", product_names: ["Milford"], detail_template: "12:30 cruise manifest for {date}: {pax} pax, names attached", confirm_by: "19:00 day before" },
+    { operator_id: operatorId, name: "Milford Sound Lodge cafe", channel: "email", contact: "cafe@example.co.nz", email: "cafe@example.co.nz", category: "meal_lunch", product_names: ["Milford"], detail_template: "Lunch numbers for {date}: {pax} pax", confirm_by: "17:00 day before" },
+    { operator_id: operatorId, name: "Southern Discoveries", channel: "email", contact: "manifests@example.co.nz", email: "manifests@example.co.nz", category: "activity", product_names: ["Milford"], detail_template: "12:30 cruise manifest for {date}: {pax} pax, names attached", confirm_by: "19:00 day before" },
     { operator_id: operatorId, name: "Mrs Woolly's General Store", channel: "phone", contact: "03 000 0000", product_names: ["Glenorchy"], detail_template: "Morning tea for {pax} at ~09:30 on {date}", confirm_by: "08:00 on the day" },
-    { operator_id: operatorId, name: "Gibbston Valley + Kinross", channel: "email", contact: "cellar@example.co.nz", product_names: ["Wine"], detail_template: "Tasting for {pax} at 14:30 and 15:45 on {date}", confirm_by: "11:00 on the day" },
+    { operator_id: operatorId, name: "Gibbston Valley + Kinross", channel: "email", contact: "cellar@example.co.nz", email: "cellar@example.co.nz", category: "activity", product_names: ["Wine"], detail_template: "Tasting for {pax} at 14:30 and 15:45 on {date}", confirm_by: "11:00 on the day" },
   ]);
   const pid = (n: string) => products?.find((p) => p.name === n)?.id ?? null;
   const deps = [

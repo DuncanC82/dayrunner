@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useAuth } from "../lib/auth";
 import { callFn, supabase, tomorrow } from "../lib/supabase";
 
-const tag = (s: string) => s === "bad" ? <span className="tag t-bad">DECIDE</span> : s === "warn" || s === "hold" ? <span className="tag t-warn">CHECK</span> : s === "sent" || s === "confirmed" ? <span className="tag t-ok">DONE</span> : <span className="tag t-ok">READY</span>;
+const tag = (s: string) => s === "bad" || s === "failed" ? <span className="tag t-bad">{s === "failed" ? "FAILED" : "DECIDE"}</span> : s === "warn" || s === "hold" || s === "replied" ? <span className="tag t-warn">CHECK</span> : s === "confirmed" ? <span className="tag t-ok">DONE</span> : s === "sent" || s === "sent_manual" ? <span className="tag t-info">{s === "sent" ? "SENT" : "BY HAND"}</span> : <span className="tag t-ok">READY</span>;
 
 export default function Day() {
   const { operator } = useAuth();
@@ -37,6 +37,8 @@ export default function Day() {
   async function approveAll() { await supabase.from("messages").update({ status: "approved" }).eq("plan_id", plan.id).eq("status", "draft"); await supabase.from("plans").update({ status: "approved" }).eq("id", plan.id); await load(); }
   async function send(mode?: string) { if (!operator) return; setBusy(true); setErr(null); try { const r = await callFn("send-messages", { operator_id: operator.id, plan_id: plan.id, mode }); const failed = r.results.filter((x: any) => x.status === "failed").length; setInfo(`Sent ${r.results.length - failed}, failed ${failed}.`); await load(); } catch (e: any) { setErr(e.message); } finally { setBusy(false); } }
   async function supStatus(id: string, status: string) { await supabase.from("supplier_confirmations").update({ status }).eq("id", id); await load(); }
+  async function supSend(ids?: string[]) { if (!operator || !plan) return; setBusy(true); setErr(null); try { const r = await callFn("supplier-confirm", { operator_id: operator.id, plan_id: plan.id, confirmation_ids: ids }); const sent = r.results.filter((x: any) => x.status === "sent").length; const manual = r.results.filter((x: any) => x.status === "sent_manual").length; const failed = r.results.filter((x: any) => x.status === "failed").length; setInfo(`Supplier confirmations: ${sent} emailed, ${manual} drafted to send by hand, ${failed} failed.`); await load(); } catch (e: any) { setErr(e.message); } finally { setBusy(false); } }
+  const [supOpen, setSupOpen] = useState<string | null>(null);
   async function resolve(id: string) { await supabase.from("exceptions").update({ resolved: true }).eq("id", id); await load(); }
   async function noShow(b: any) { if (!operator) return; await supabase.from("incidents").insert({ operator_id: operator.id, departure_id: b.departure_id, booking_id: b.id, kind: "no_show", detail: `${b.lead_name} did not show for pickup` }); setInfo(`${b.lead_name} logged as no-show.`); }
 
@@ -61,7 +63,7 @@ export default function Day() {
 
       {plan && <>
         <div className="summary" style={{ marginTop: 16 }}>
-          <div><b>{plan.summary.departures}</b><span>departures</span></div><div><b>{plan.summary.pax}</b><span>guests</span></div><div><b>{msgs.length}</b><span>messages</span></div><div><b>{excs.filter((e) => e.level === "bad" && !e.resolved).length}</b><span>need a decision</span></div>
+          <div><b>{plan.summary.departures}</b><span>departures</span></div><div><b>{plan.summary.pax}</b><span>guests{plan.summary.km ? ` · ${plan.summary.km} km · ${plan.summary.work_hours}h work` : ""}</span></div><div><b>{msgs.length}</b><span>messages</span></div><div><b>{excs.filter((e) => e.level === "bad" && !e.resolved).length}</b><span>need a decision</span></div>
         </div>
         {plan.summary.narrative && <p className="muted" style={{ marginTop: 10 }}>{plan.summary.narrative}</p>}
 
@@ -72,13 +74,26 @@ export default function Day() {
 
         <section><h2>Allocation</h2><div className="wrap"><table>
           <tr><th>Dep</th><th>Product</th><th>Vehicle</th><th>Driver / guide</th><th>Pax</th><th>Pickup run</th><th></th></tr>
-          {allocs.sort((a, b) => depName(a.departure_id).localeCompare(depName(b.departure_id))).map((a) => <tr key={a.id}><td className="num">{depName(a.departure_id).slice(0, 5)}</td><td>{depName(a.departure_id).slice(6)}</td><td>{a.vehicle_label ?? <span className="tag t-bad">none</span>}</td><td>{a.driver_label ?? <span className="tag t-bad">none</span>}{a.guide_label && a.guide_label !== a.driver_label && <><br /><small className="muted">{a.guide_label}</small></>}</td><td className="num">{a.pax}</td><td>{(a.pickup_sequence ?? []).map((s: any) => `${s.time} ${s.location} (${s.pax})`).join(" → ")}{a.note && <><br /><small className="muted">{a.note}</small></>}</td><td>{tag(a.status)}</td></tr>)}
+          {allocs.sort((a, b) => depName(a.departure_id).localeCompare(depName(b.departure_id))).map((a) => <tr key={a.id}><td className="num">{depName(a.departure_id).slice(0, 5)}</td><td>{depName(a.departure_id).slice(6)}</td><td>{a.vehicle_label ?? <span className="tag t-bad">none</span>}</td><td>{a.driver_label ?? <span className="tag t-bad">none</span>}{a.guide_label && a.guide_label !== a.driver_label && <><br /><small className="muted">{a.guide_label}</small></>}</td><td className="num">{a.pax}{a.work_minutes ? <><br /><small className="muted">{Math.floor(a.work_minutes/60)}h{String(a.work_minutes%60).padStart(2,"0")} · {a.km ?? 0} km</small></> : null}</td><td>{(a.pickup_sequence ?? []).map((s: any) => `${s.time} ${s.location} (${s.pax})`).join(" → ")}{(a.breaks ?? []).length ? <><br /><small className="muted">Breaks after {(a.breaks as any[]).map((b) => b.after).join(", ")}</small></> : null}{a.note && <><br /><small className="muted">{a.note}</small></>}</td><td>{tag(a.status)}</td></tr>)}
         </table></div></section>
 
-        <section><h2>Supplier confirmations</h2><div className="wrap"><table>
-          <tr><th>Supplier</th><th>Confirm</th><th>By</th><th></th></tr>
-          {sups.map((s) => <tr key={s.id}><td>{s.supplier_name}</td><td>{s.detail}</td><td className="num">{s.due_label}</td><td>{tag(s.status)} {s.status !== "confirmed" && <button className="sm ghost" onClick={() => supStatus(s.id, "confirmed")}>Confirmed</button>}</td></tr>)}
-          {sups.length === 0 && <tr><td colSpan={4} className="muted">No suppliers match tomorrow's products. Add suppliers in Setup.</td></tr>}
+        <section>
+          <div className="bar"><h2>Supplier confirmations</h2><span className="muted small">{sups.filter((s) => ["pending", "hold"].includes(s.status)).length} pending · {sups.filter((s) => ["sent", "sent_manual", "replied"].includes(s.status)).length} awaiting reply · {sups.filter((s) => s.status === "confirmed").length} confirmed</span>
+            <button className="sm" onClick={() => supSend()} disabled={busy || sups.filter((s) => ["pending", "hold", "failed"].includes(s.status)).length === 0}>Send all pending</button>
+          </div>
+          <div className="wrap"><table>
+          <tr><th>Supplier</th><th>Confirm</th><th>By</th><th>Status</th><th></th></tr>
+          {sups.map((s) => <>
+            <tr key={s.id}><td>{s.supplier_name}</td><td>{s.detail}{s.reply_text && <><br /><small className="muted">Reply: {s.reply_text}</small></>}</td><td className="num">{s.due_label}</td>
+              <td>{tag(s.status)}{s.sent_at && <><br /><small className="muted">sent {new Date(s.sent_at).toLocaleString("en-NZ", { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" })}</small></>}{s.replied_at && <><br /><small className="muted">replied {new Date(s.replied_at).toLocaleString("en-NZ", { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" })}</small></>}</td>
+              <td>
+                {s.status !== "confirmed" && <button className="sm" onClick={() => supSend([s.id])} disabled={busy}>{s.sent_at ? "Resend" : "Send"}</button>}{" "}
+                {s.message_body && <button className="sm ghost" onClick={() => setSupOpen(supOpen === s.id ? null : s.id)}>{supOpen === s.id ? "Hide draft" : "Draft"}</button>}{" "}
+                {s.status !== "confirmed" && <button className="sm ghost" onClick={() => supStatus(s.id, "confirmed")}>Confirmed</button>}
+              </td></tr>
+            {supOpen === s.id && s.message_body && <tr key={s.id + "-draft"}><td colSpan={5}><div className="msg"><div className="body" style={{ whiteSpace: "pre-wrap" }}>{s.message_body}</div><div className="act"><button className="sm ghost" onClick={() => navigator.clipboard.writeText(s.message_body)}>Copy</button></div></div></td></tr>}
+          </>)}
+          {sups.length === 0 && <tr><td colSpan={5} className="muted">No suppliers match tomorrow's products. Add suppliers in Setup.</td></tr>}
         </table></div></section>
 
         <section>
