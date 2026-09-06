@@ -41,7 +41,7 @@ async function polish(key: string, voice: string | null, opName: string, bodies:
   if (!voice || !bodies.length) return bodies;
   try {
     const prompt = `You are DayRunner, the operations assistant for ${opName}, a tour operator. Rewrite these supplier reconfirmation emails in this voice: ${voice}. Tone: warm but brief, trade-to-trade. You must keep every number, date, time, product name, dietary note and supplier name exactly. Keep the word "confirmed" in the ask. Keep the sign-off name. Return JSON only: {"emails":[{"i":index,"body":"..."}]}.\n\nEmails: ${JSON.stringify(bodies.map((body, i) => ({ i, body })))}`;
-    const r = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" }, body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 4000, messages: [{ role: "user", content: prompt }] }) });
+    const r = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "x-api-key": key, "anthropic-version": "2023-06-01", ...(Deno.env.get("ANTHROPIC_WORKSPACE_ID") ? { "anthropic-workspace-id": Deno.env.get("ANTHROPIC_WORKSPACE_ID")! } : {}), "content-type": "application/json" }, body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 4000, messages: [{ role: "user", content: prompt }] }) });
     if (!r.ok) return bodies;
     const out = await r.json(); const text = out.content?.[0]?.text ?? "";
     const j = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
