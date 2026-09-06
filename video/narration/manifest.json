@@ -1,0 +1,37 @@
+{
+ "01_open": {
+  "path": "/Users/duncancrawford/Documents/dayrunner/video/narration/01_open.mp3",
+  "characters": 261,
+  "cost_usd": 0.03132
+ },
+ "02_board": {
+  "path": "/Users/duncancrawford/Documents/dayrunner/video/narration/02_board.mp3",
+  "characters": 180,
+  "cost_usd": 0.021599999999999998
+ },
+ "03_exceptions": {
+  "path": "/Users/duncancrawford/Documents/dayrunner/video/narration/03_exceptions.mp3",
+  "characters": 276,
+  "cost_usd": 0.033120000000000004
+ },
+ "04_messages": {
+  "path": "/Users/duncancrawford/Documents/dayrunner/video/narration/04_messages.mp3",
+  "characters": 186,
+  "cost_usd": 0.02232
+ },
+ "05_suppliers": {
+  "path": "/Users/duncancrawford/Documents/dayrunner/video/narration/05_suppliers.mp3",
+  "characters": 228,
+  "cost_usd": 0.02736
+ },
+ "06_runsheet": {
+  "path": "/Users/duncancrawford/Documents/dayrunner/video/narration/06_runsheet.mp3",
+  "characters": 208,
+  "cost_usd": 0.02496
+ },
+ "07_close": {
+  "path": "/Users/duncancrawford/Documents/dayrunner/video/narration/07_close.mp3",
+  "characters": 239,
+  "cost_usd": 0.028679999999999997
+ }
+}

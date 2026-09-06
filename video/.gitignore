@@ -1,0 +1,4 @@
+.session.json
+.sessions.json
+node_modules
+out/
